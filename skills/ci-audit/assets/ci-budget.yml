@@ -1,0 +1,58 @@
+# CI budget: opens an issue when PR checks get slower than the budget.
+#
+# Setup:
+#   1. Copy this file to .github/workflows/ci-budget.yml
+#   2. Copy the skill's scripts/ci_audit.py to .github/scripts/ci_audit.py
+#   3. Set BUDGET_MINUTES below to the p50 PR feedback time you want to hold
+#
+# It only reads workflow runs and writes one issue. It changes nothing else.
+
+name: CI budget
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+env:
+  BUDGET_MINUTES: "5"
+  ISSUE_TITLE: "PR checks are over the CI time budget"
+
+jobs:
+  budget:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Measure the last 7 days
+        id: audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 .github/scripts/ci_audit.py \
+            --repo "$GITHUB_REPOSITORY" --days 7 --max-runs 500 \
+            --budget-minutes "$BUDGET_MINUTES" --md report.md
+          code=$?
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          # 0 = within budget, 3 = over budget, anything else = the audit itself broke
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then exit "$code"; fi
+          echo "over=$([ "$code" -eq 3 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the issue
+        if: steps.audit.outputs.over == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh issue list --state open --search "in:title \"$ISSUE_TITLE\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file report.md
+          else
+            gh issue create --title "$ISSUE_TITLE" --body-file report.md
+          fi
