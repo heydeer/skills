@@ -24,16 +24,26 @@ commit superseded them" row is the size of this.
 
 ```yaml
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 ```
 
-Cancel only on pull requests. On the default branch every commit's result
-matters (it is how you find which merge broke main), and cancelling a deploy
-halfway is worse than letting it finish. If the workflow already has a
-`concurrency` block and runs are still not cancelled, the group key is usually
-too specific (it includes the SHA or run id) or `cancel-in-progress` is
-missing.
+The group is the pull request's number on a PR and the run's own id
+everywhere else. Naming the workflow keeps two workflows on the same PR from
+cancelling each other, and the PR number (not the branch name) keeps two
+forks with the same branch name apart. On the default branch every run is in
+a group of its own, so it is never cancelled and never dropped while it
+waits. That matters: every commit's result on main is how you find which
+merge broke it, and in a shared group a pending run is replaced by the next
+one even with `cancel-in-progress` off.
+
+A deploy workflow that must not overlap with itself is a different case: give
+it one group and no cancellation, and accept that queued deploys collapse to
+the newest.
+
+If the workflow already has a `concurrency` block and PR runs are still not
+cancelled, the group key is usually too specific on pull requests too (it
+includes the SHA or run id) or `cancel-in-progress` is missing.
 
 ## 2. Stop triggering twice
 
