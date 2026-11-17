@@ -40,10 +40,13 @@ running jobs in parallel that used to stop at the first failure all cut the
 wait and can raise the bill. If you can't ask (the user wants a report and
 nothing else), assume both matter and show each change's effect on both.
 
-**Check access.** The script needs the `gh` CLI signed in with read access to
-Actions (`gh auth status`). Without it, or for CI that isn't GitHub Actions,
-see "No API access" in `references/measure.md`; the rest of the method still
-applies.
+**Check access.** The script reads GitHub through the `gh` CLI
+(`gh auth status`), or, when `gh` isn't installed, with a token in `GH_TOKEN`
+or `GITHUB_TOKEN`. Either needs read access to Actions. With neither it stops
+and says so: tell the user the two ways to fix it and let them choose; don't
+install tools on their machine unasked. For CI that isn't GitHub Actions, or
+when access can't be arranged, see "No API access" in
+`references/measure.md`; the rest of the method still applies.
 
 ## Step 1: Measure
 

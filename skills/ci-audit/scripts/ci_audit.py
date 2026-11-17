@@ -22,7 +22,8 @@ Usage:
   python3 ci_audit.py --save-dir raw/         # keep the raw API data
   python3 ci_audit.py --from-dir raw/         # re-analyze without the API
 
-Standard library only. Needs `gh` authenticated with read access to Actions.
+Standard library only. Reads GitHub through the `gh` CLI when it is installed, and otherwise with the
+token in GH_TOKEN or GITHUB_TOKEN; either needs read access to Actions.
 It never writes to the repository or to GitHub.
 """
 
@@ -31,13 +32,16 @@ import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 PR_EVENTS = {"pull_request", "pull_request_target"}
 FIRST_WAVE_SECONDS = 180
@@ -189,11 +193,30 @@ def group_name(job_name):
 
 # ---------------------------------------------------------------- data source
 
+class _DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+    """Log downloads redirect to a signed storage URL, which rejects a request that still carries the token."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new and urlparse(newurl).netloc != urlparse(req.full_url).netloc:
+            new.headers.pop("Authorization", None)
+        return new
+
+
+NO_ACCESS = ("This script reads GitHub through the `gh` CLI or, without it, a token. Neither is available here.\n"
+             "  - Install gh (https://cli.github.com) and run `gh auth login`, or\n"
+             "  - set GH_TOKEN (or GITHUB_TOKEN) to a token that can read Actions on this repository.\n"
+             "To analyze data exported elsewhere with --save-dir, use --from-dir instead.")
+
+
 class Source:
-    """Reads from the GitHub API through `gh`, or from a directory saved earlier."""
+    """Reads from the GitHub API through `gh` or a token, or from a directory saved earlier."""
 
     def __init__(self, repo, from_dir=None, save_dir=None):
         self.repo, self.from_dir, self.save_dir = repo, from_dir, save_dir
+        self.token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        self.use_gh = bool(shutil.which("gh"))
+        self.opener = urllib.request.build_opener(_DropAuthOnRedirect)
         if save_dir:
             for sub in ("jobs", "logs"):
                 os.makedirs(os.path.join(save_dir, sub), exist_ok=True)
@@ -201,15 +224,34 @@ class Source:
     def _gh(self, path, params=None, raw=False):
         url = path + ("?" + urlencode(params) if params else "")
         for attempt in range(4):   # network blips are common over hundreds of requests
-            proc = subprocess.run(["gh", "api", url], capture_output=True)
-            if proc.returncode == 0:
+            text, error = self._call(url)
+            if error is None:
                 break
-            error = proc.stderr.decode("utf-8", "replace").strip() or f"gh api {url} failed"
             if re.search(r"HTTP 40[134]|HTTP 410|HTTP 422", error) or attempt == 3:
                 raise RuntimeError(error)
             time.sleep(2 ** attempt)
-        text = proc.stdout.decode("utf-8", "replace")
         return text if raw else json.loads(text)
+
+    def _call(self, url):
+        """One API request. Returns (text, None) or (None, what went wrong)."""
+        if self.use_gh:
+            proc = subprocess.run(["gh", "api", url], capture_output=True)
+            if proc.returncode == 0:
+                return proc.stdout.decode("utf-8", "replace"), None
+            return None, proc.stderr.decode("utf-8", "replace").strip() or f"gh api {url} failed"
+        if not self.token:
+            sys.exit(NO_ACCESS)
+        base = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+        request = urllib.request.Request(f"{base}/{url}", headers={
+            "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "ci-audit"})
+        try:
+            with self.opener.open(request, timeout=60) as response:
+                return response.read().decode("utf-8", "replace"), None
+        except urllib.error.HTTPError as error:
+            return None, f"HTTP {error.code}: {error.read().decode('utf-8', 'replace')[:300]}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+            return None, str(getattr(error, "reason", error))
 
     def _read(self, *parts):
         path = os.path.join(self.from_dir, *parts)
@@ -1381,16 +1423,20 @@ def main():
 
     if args.from_dir and not os.path.isfile(os.path.join(args.from_dir, "runs.json")):
         sys.exit(f"{args.from_dir} has no runs.json. Point --from-dir at a directory written by --save-dir.")
+    if not args.from_dir and not shutil.which("gh") and not (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")):
+        sys.exit(NO_ACCESS)
     if not args.from_dir and not args.repo:
-        proc = subprocess.run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-                              capture_output=True, text=True)
-        args.repo = proc.stdout.strip() if proc.returncode == 0 else ""
+        args.repo = ""
+        if shutil.which("gh"):
+            proc = subprocess.run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
+                                  capture_output=True, text=True)
+            args.repo = proc.stdout.strip() if proc.returncode == 0 else ""
         if not args.repo:   # gh repo view needs GraphQL, which some tokens and proxies don't allow
             remote = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True).stdout.strip()
             match = re.search(r"[:/]([^/:@]+)/([^/]+?)(?:\.git)?/?$", remote)
             args.repo = f"{match.group(1)}/{match.group(2)}" if match else ""
         if not args.repo:
-            sys.exit("Could not tell which repo this is. Pass --repo owner/name (and check `gh auth status`).")
+            sys.exit("Could not tell which repo this is. Run from inside its checkout, or pass --repo owner/name.")
 
     source = Source(args.repo, args.from_dir, args.save_dir)
     try:

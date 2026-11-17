@@ -129,8 +129,9 @@ it says exactly where a check moved whenever one stops running on PRs.
 
 #### Requirements
 
-Needs the [`gh` CLI](https://cli.github.com) signed in with read access to
-Actions, and Python 3.8 or later. The measurement script supports GitHub
+Needs Python 3.8 or later and read access to the repository's Actions: either
+the [`gh` CLI](https://cli.github.com), signed in, or a token in `GH_TOKEN`
+or `GITHUB_TOKEN`. Without either, the script stops and says what to set up. The measurement script supports GitHub
 Actions; the method and the reference material apply to any CI.
 
 You can also run the script by itself:

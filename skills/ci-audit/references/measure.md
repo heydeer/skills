@@ -206,8 +206,11 @@ others run everything, one median over both describes neither; use
 
 ## No API access, or not GitHub Actions
 
-Without `gh` access, ask the user to run the script and paste the report, or
-to export the data and share the directory:
+The script needs either the `gh` CLI, signed in, or a token in `GH_TOKEN` or
+`GITHUB_TOKEN` (a fine-grained token with read access to Actions and
+metadata on the repository is enough). When neither can be arranged where
+you are running, ask the user to run the script and paste the report, or to
+export the data and share the directory:
 
 ```bash
 python3 ci_audit.py --save-dir ci-export          # the user, where gh works
