@@ -1,0 +1,7 @@
+interface:
+  display_name: "CI audit"
+  short_description: "What your CI could save each month, and the fixes you pick"
+  default_prompt: "Audit this repository's CI and tell me what we could save each month."
+
+policy:
+  allow_implicit_invocation: false

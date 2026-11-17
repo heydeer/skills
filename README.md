@@ -32,13 +32,27 @@ the time and money actually go before it changes anything.
 npx skills@latest add heydeer/skills --skill ci-audit
 ```
 
-It runs only when you ask for it. In Claude Code the skill is marked so the
-agent can't start it on its own; in other agents its instructions say to wait
-until asked.
+Then run it with no arguments. It reads your last two weeks of workflow runs
+and opens with the two numbers below, and it changes nothing until you say so.
 
 ```
-/ci-audit where do our CI time and money go? Don't change anything yet.
+/ci-audit
 ```
+
+In Codex, skills start with `$`: type `$ci-audit`.
+
+Or ask it something specific:
+
+```
+/ci-audit why do PR checks take 20 minutes?
+/ci-audit which jobs are flaky?
+/ci-audit is macOS on every pull request worth what it costs?
+/ci-audit make the safe fixes
+```
+
+It runs only when you ask for it. Claude Code, Cursor and Codex are told not
+to start it on their own; in other agents its instructions say to wait until
+asked.
 
 #### What you get
 

@@ -24,8 +24,8 @@ a time so each change can be shown to have worked.
 
 ## Before you start
 
-**Run only when asked.** This skill is for when the user invokes it (`/ci-audit`)
-or asks for a CI audit in so many words. An audit reads hundreds of workflow
+**Run only when asked.** This skill is for when the user invokes it
+(`/ci-audit`, or `$ci-audit` in Codex) or asks for a CI audit in so many words. An audit reads hundreds of workflow
 runs and produces a long report, so don't start one because CI came up in
 passing or a build happened to be slow.
 
@@ -34,11 +34,19 @@ after the user has seen the report and picked what to do. If they asked you to
 "just fix it", still write the report first, then make the changes in the
 *safe* tier below and ask about the rest.
 
-**Know the goal.** Ask whether they care most about wait time, cost, or both,
-unless they already said. Some advice flips: a bigger machine, more shards, or
-running jobs in parallel that used to stop at the first failure all cut the
-wait and can raise the bill. If you can't ask (the user wants a report and
-nothing else), assume both matter and show each change's effect on both.
+**Answer what was asked.** Invoked with no question, do the full audit and
+open with the two savings numbers; that is what most people want, so don't
+stop to ask anything first. Invoked with a question (why PR checks are slow,
+which jobs are flaky, whether a macOS leg earns its cost), measure the same
+way, answer that question first with its evidence, then give the two numbers
+in a line so they know what else the audit found. Write the full report only
+if they want it.
+
+**Know the goal.** Wait time, cost, or both: take it from what they asked, and
+when they didn't say, assume both matter and show each change's effect on
+both. Some advice flips: a bigger machine, more shards, or running jobs in
+parallel that used to stop at the first failure all cut the wait and can raise
+the bill, so ask before making a change that trades one for the other.
 
 **Check access.** The script reads GitHub through the `gh` CLI
 (`gh auth status`), or, when `gh` isn't installed, with a token in `GH_TOKEN`
