@@ -93,6 +93,14 @@ of past PRs whose CI caught a real bug and check that selection would still
 have run the failing test. Keep that replay as a recurring job, because
 selection drifts as code moves.
 
+Whether it appears in the report is a rule, not a judgment call. Include a
+test-selection finding only when both hold: the test jobs rank in the top
+three of the job table by billed minutes, and the repository already has the
+support in place (a workspace graph tool, or a test runner with selection
+built in). Its expected effect is "needs a trial to price" — no dollar
+figure, and never part of the headline numbers. When either condition fails,
+leave it out of the report.
+
 ## 4. Matrix and platform legs
 
 The report's matrix table shows what each leg costs. macOS and Windows
