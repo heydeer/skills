@@ -235,17 +235,27 @@ class Source:
                 self.token = proc.stdout.strip() or None
         self.log_errors = []
         self.opener = urllib.request.build_opener(_DropAuthOnRedirect)
+        self.requests = self.reused = 0
+        self.rate_limited = False
         if save_dir:
             for sub in ("jobs", "logs"):
                 os.makedirs(os.path.join(save_dir, sub), exist_ok=True)
 
     def _gh(self, path, params=None, raw=False):
         url = path + ("?" + urlencode(params) if params else "")
+        if self.rate_limited:   # every further request would fail the same way and count against the limit
+            raise RuntimeError("rate limit reached")
         for attempt in range(4):   # network blips are common over hundreds of requests
+            self.requests += 1
             text, error = self._call(url)
             if error is None:
                 break
-            if re.search(r"HTTP 40[134]|HTTP 410|HTTP 422", error) or attempt == 3:
+            if re.search(r"secondary rate limit", error, re.I) and attempt < 3:
+                time.sleep(30 * (attempt + 1))   # too many requests at once: GitHub lifts this within a minute or so
+                continue
+            if re.search(r"rate limit", error, re.I):
+                self.rate_limited = True
+            if self.rate_limited or re.search(r"HTTP 40[134]|HTTP 410|HTTP 422", error) or attempt == 3:
                 raise RuntimeError(error)
             time.sleep(2 ** attempt)
         return text if raw else json.loads(text)
@@ -286,6 +296,15 @@ class Source:
             with open(os.path.join(self.save_dir, *parts), "w", encoding="utf-8") as handle:
                 handle.write(text)
 
+    def quota(self):
+        """(requests left, limit, reset time) for this token, or None. Asking is free: it uses none of the limit."""
+        try:
+            text, error = self._call("rate_limit")
+            core = json.loads(text)["resources"]["core"]
+            return core["remaining"], core["limit"], datetime.fromtimestamp(core["reset"], timezone.utc)
+        except (TypeError, KeyError, ValueError):   # GitHub Enterprise Server can have rate limits turned off
+            return None
+
     def repo_info(self):
         if self.from_dir:
             return json.loads(self._read("repo.json") or "{}")
@@ -298,14 +317,15 @@ class Source:
         if self.from_dir:
             return json.loads(self._read("runs.json") or "[]")
         runs, seen = [], set()
-        day_end = datetime.now(timezone.utc) + timedelta(minutes=5)
         stamp = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
-        while len(runs) < max_runs and day_end > since:   # one query returns at most 1,000 runs, so go a day at a time
-            day_start = max(since, day_end - timedelta(days=1))
-            page = 1
-            while len(runs) < max_runs and page <= 10:
+
+        def read(start, end):
+            """Newest runs created in this span. True when the API's 1,000-result cap hid older ones."""
+            for page in range(1, 11):
+                if len(runs) >= max_runs:
+                    return False
                 params = {"per_page": 100, "page": page, "status": "completed",
-                          "created": f"{stamp(day_start)}..{stamp(day_end)}"}
+                          "created": f"{stamp(start)}..{stamp(end)}"}
                 if event:
                     params["event"] = event
                 if branch:
@@ -316,24 +336,37 @@ class Source:
                         seen.add(run["id"])
                         runs.append(run)
                 if len(batch) < 100:
-                    break
-                page += 1
-            day_end = day_start
+                    return False
+            return True
+
+        day_end = datetime.now(timezone.utc) + timedelta(minutes=5)
+        if read(since, day_end):   # one query covers most repositories; a busy one continues a day at a time
+            day_end = min(parse_ts(r["created_at"]) for r in runs) + timedelta(seconds=1)
+            while len(runs) < max_runs and day_end > since:
+                day_start = max(since, day_end - timedelta(days=1))
+                read(day_start, day_end)
+                day_end = day_start
         runs = runs[:max_runs]
         self._save(json.dumps(runs), "runs.json")
         return runs
 
-    def jobs(self, run_id):
+    def jobs(self, run):
+        run_id = run["id"]
+        if run.get("conclusion") == "skipped":   # every job of a skipped run was skipped: no time, no minutes
+            return []
         if self.from_dir:
             text = self._read("jobs", f"{run_id}.json")
             if text is None:   # the saving pass could not read this run; keep it out, don't fake an empty one
                 raise RuntimeError("jobs/<run>.json missing from --from-dir (unread when saved)")
             return json.loads(text)
-        if self.save_dir:   # resume: a run saved by an earlier, interrupted pass is not fetched again
+        if self.save_dir:   # a run saved by an earlier pass is not fetched again, unless it was re-run since
             saved = os.path.join(self.save_dir, "jobs", f"{run_id}.json")
             if os.path.exists(saved):
                 with open(saved, encoding="utf-8") as handle:
-                    return json.load(handle)
+                    jobs = json.load(handle)
+                if all((j.get("run_attempt") or 1) == (run.get("run_attempt") or 1) for j in jobs):
+                    self.reused += 1
+                    return jobs
         jobs, page = [], 1
         while True:
             data = self._gh(f"repos/{self.repo}/actions/runs/{run_id}/jobs",
@@ -364,7 +397,11 @@ class Source:
     def log(self, job_id):
         if self.from_dir:
             return self._read("logs", f"{job_id}.txt")
+        if self.save_dir and os.path.exists(os.path.join(self.save_dir, "logs", f"{job_id}.txt")):
+            with open(os.path.join(self.save_dir, "logs", f"{job_id}.txt"), encoding="utf-8", errors="replace") as handle:
+                return handle.read()
         path = f"repos/{self.repo}/actions/jobs/{job_id}/logs"
+        self.requests += 1
         if self.token:
             # not through `gh api`: it refuses log bodies ("the response contains terminal escape sequences")
             text, error = self._http(path)
@@ -1657,25 +1694,35 @@ def main():
         sys.exit("No completed workflow runs matched. Widen --days, or check the filters.")
 
     print(f"Reading jobs for {len(runs_raw)} runs...", file=sys.stderr)
+    quota = None if args.from_dir else source.quota()
+    if quota and quota[0] < len(runs_raw):   # an estimate: runs already in --save-dir and skipped runs need no request
+        print(f"This token has {quota[0]} of {quota[1]} API requests left until {quota[2]:%H:%M} UTC, fewer than the runs to read. "
+              "Whatever cannot be read is left out; rerun with the same --save-dir after that time to fetch the rest.", file=sys.stderr)
     unread = []
 
     def jobs_of(run):
         try:
-            return source.jobs(run["id"])
+            return source.jobs(run)
         except RuntimeError as error:
             unread.append((run["id"], str(error).splitlines()[-1][:120]))
             return None
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         jobs = list(pool.map(jobs_of, runs_raw))
-    rate_limited = any("rate limit" in reason.lower() for _, reason in unread)
+    resets = ""
+    if source.rate_limited:
+        quota = source.quota()
+        resets = f" (it resets at {quota[2]:%H:%M} UTC)" if quota else " (it resets hourly)"
     if unread:
         print(f"Could not read jobs for {len(unread)} runs (first: {unread[0][1]}). They are left out; "
               "rerun with the same --save-dir to fetch only what is missing.", file=sys.stderr)
-        if rate_limited:
-            print("The GitHub API rate limit ran out mid-fetch; it resets hourly.", file=sys.stderr)
         if len(unread) > len(runs_raw) / 2:
+            if source.rate_limited:
+                sys.exit(f"The GitHub API rate limit ran out before half the runs were read{resets}. Rerun then with "
+                         "the same --save-dir to fetch only what is missing, or pass a smaller --max-runs.")
             sys.exit("More than half the runs could not be read. Check `gh auth status` and network access.")
+        if source.rate_limited:
+            print(f"The GitHub API rate limit ran out mid-fetch{resets}.", file=sys.stderr)
     runs_raw, jobs = zip(*[(r, j) for r, j in zip(runs_raw, jobs) if j is not None])
     if unread:   # project months from the runs that were read, not from days the fetch skipped
         window = (min(map(started, runs_raw)), max(parse_ts(r.get("updated_at")) or started(r) for r in runs_raw))
@@ -1687,8 +1734,8 @@ def main():
     if unread:
         result["signals"].insert(0, f"{len(unread)} runs could not be read and are missing from every number here; "
                                  "the window and the monthly projection cover only the runs that were read.")
-        if rate_limited:
-            result["signals"].insert(1, "The GitHub API rate limit ran out mid-fetch (it resets hourly): rerun later "
+        if source.rate_limited:
+            result["signals"].insert(1, f"The GitHub API rate limit ran out mid-fetch{resets}: rerun later "
                                      "with the same --save-dir to fetch only what is missing, then re-analyze.")
     if capped:
         result["signals"].append(f"Hit --max-runs {args.max_runs}: the window is shorter than --days {args.days}. "
@@ -1702,6 +1749,9 @@ def main():
             providers = json.load(handle)
     estimate_savings(runs, result, info, args, providers, flaky_jobs(source, runs, result))
 
+    if not args.from_dir:
+        print(f"{source.requests} GitHub API requests"
+              + (f"; {source.reused} runs reused from {args.save_dir}" if source.reused else ""), file=sys.stderr)
     report = render(result, args)
     if args.md:
         with open(args.md, "w", encoding="utf-8") as handle:

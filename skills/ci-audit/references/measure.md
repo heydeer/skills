@@ -6,16 +6,29 @@ dig further.
 ## What the script reads
 
 Through `gh api`, read-only: the repository's completed workflow runs in the
-window, the jobs and steps of each run, and the logs of a few recent jobs. It
-makes one request per run plus a handful for logs, so 300 runs take under a
-minute and 3,000 take five or six. On a busy repository the default 300 runs
-may cover only a day; raise `--max-runs` until the window spans at least a
-working week. Failed requests are retried, and a rerun with the same
-`--save-dir` fetches only what is missing. The API allows about 5,000
-requests an hour; a busy week can exhaust that mid-fetch, in which case the
-runs it could not read are dropped from every number *and from the window*,
-the report says so, and a rerun after the hourly reset backfills them. `--save-dir` keeps the raw responses; point `--from-dir` at that
-directory to re-analyze without calling the API again, or read the JSON files
+window, the jobs and steps of each run, and the logs of a few recent jobs.
+
+GitHub has no way to read the jobs of many runs at once, so the script makes
+one API request per run, plus a few to list the runs and about thirty for
+logs: roughly 330 requests for the default 300 runs, and it prints the count
+when it finishes. A personal token allows 5,000 requests an hour on most
+plans and the token a workflow gets allows 1,000, shared with everything else
+that uses them, so:
+
+- Keep the same `--save-dir` for every run of an audit. A run that is already
+  saved is not requested again, so refocusing with `--workflow`, `--event` or
+  `--branch`, or measuring again a few days later, costs a handful of requests
+  instead of hundreds.
+- On a busy repository the default 300 runs may cover only a day. Raise
+  `--max-runs` until the window spans a working week, but in steps and with the
+  same `--save-dir`: 3,000 runs is 3,000 requests and five or six minutes.
+- If the limit runs out mid-fetch, the runs it could not read are dropped from
+  every number *and from the window*, and the report says so and when the
+  limit resets. Rerun then with the same `--save-dir` and it fetches only what
+  is missing.
+
+Point `--from-dir` at a saved directory to re-analyze with no requests at all,
+or read the JSON files
 yourself for a question the report doesn't answer. `--json` writes every
 table plus one record per PR commit (branch, account, outcome, wait, billed
 minutes, cost), which is the starting point for pricing a different pipeline

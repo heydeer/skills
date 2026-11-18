@@ -77,6 +77,12 @@ report then covers only the runs it kept, and a rerun after the reset with
 the same `--save-dir` fetches only what is missing). Never project a month
 from days the fetch skipped.
 
+Each run it reads costs one GitHub API request, about 330 for the default, and
+the script prints the count when it finishes. Keep the same `--save-dir` every
+time you run it in this audit: runs already saved are not requested again, so
+raising `--max-runs` or adding a filter pays only for runs it has not seen.
+Raise `--max-runs` in steps and stop once the window holds.
+
 The report opens with **two savings numbers**: dollars a month from the
 fixes it can price while keeping today's runners, and the total if the Linux
 jobs also moved to the cheapest managed runner at list price. Under them is
