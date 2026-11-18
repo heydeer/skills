@@ -196,8 +196,11 @@ not the answer:
 - Add rows for fixes the script can't price (a slow postinstall, an
   oversized runner, a stuck PR), each with its arithmetic from the job and
   step tables: jobs per month × seconds saved × that runner's rate.
-- Cut the arm64 row to the jobs you have reason to think can move. The
-  script prices it as if every Linux job did, which is a ceiling.
+- The arm64 row is a ceiling: the script prices it as if every Linux x64 job
+  moved. Subtract only jobs the YAML proves cannot move — they build or push
+  x64 images or binaries, or use dependencies with no arm build — and name
+  each one. Never scale the row by a guessed adoption share; two auditors
+  reading the same YAML must land on the same number.
 - Don't count a minute twice. Price each row on what the rows above leave.
 - Present exactly two totals: what the pipeline fixes save on the runners
   they have, and what they save if they also switch runners. The first is
@@ -219,7 +222,11 @@ not the answer:
   to new customers, new providers undercut it), so treat it as a starting
   point, never a source: write down the date, rerun with `--providers` if
   anything moved, and say what list price leaves out — plan fees, free
-  tiers, cache charges, and machines faster or slower than today's.
+  tiers, cache charges, and machines faster or slower than today's. When
+  this session cannot open the web at all, still print the number, but
+  carry its caveat in the same line — "at list prices the script recorded
+  on <date>, not verified in this session" — and make verifying them the
+  first step of the recommended order.
 - Say for each provider you keep whether it bills by the second or rounds
   each job up to a whole minute; when its page doesn't say, write "rounding
   unknown" in its row. When most minutes run on a provider whose rounding

@@ -234,6 +234,7 @@ class Source:
             if proc.returncode == 0:
                 self.token = proc.stdout.strip() or None
         self.log_errors = []
+        self.saved_filters = {}
         self.opener = urllib.request.build_opener(_DropAuthOnRedirect)
         self.requests = self.reused = 0
         self.rate_limited = False
@@ -313,8 +314,9 @@ class Source:
         self._save(json.dumps(info), "repo.json")
         return info
 
-    def runs(self, since, max_runs, event=None, branch=None):
+    def runs(self, since, max_runs, branch=None):
         if self.from_dir:
+            self.saved_filters = json.loads(self._read("filters.json") or "{}")
             return json.loads(self._read("runs.json") or "[]")
         runs, seen = [], set()
         stamp = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -326,8 +328,6 @@ class Source:
                     return False
                 params = {"per_page": 100, "page": page, "status": "completed",
                           "created": f"{stamp(start)}..{stamp(end)}"}
-                if event:
-                    params["event"] = event
                 if branch:
                     params["branch"] = branch
                 batch = self._gh(f"repos/{self.repo}/actions/runs", params).get("workflow_runs", [])
@@ -339,14 +339,17 @@ class Source:
                     return False
             return True
 
-        day_end = datetime.now(timezone.utc) + timedelta(minutes=5)
-        if read(since, day_end):   # one query covers most repositories; a busy one continues a day at a time
-            day_end = min(parse_ts(r["created_at"]) for r in runs) + timedelta(seconds=1)
-            while len(runs) < max_runs and day_end > since:
-                day_start = max(since, day_end - timedelta(days=1))
-                read(day_start, day_end)
-                day_end = day_start
+        end = datetime.now(timezone.utc) + timedelta(minutes=5)
+        # one query covers most repositories; past the cap, query again below the oldest
+        # run in hand, so even a day with over 1,000 runs loses nothing
+        while read(since, end) and len(runs) < max_runs:
+            oldest = min(parse_ts(r["created_at"]) for r in runs)
+            if oldest + timedelta(seconds=1) >= end:   # over 1,000 runs created in one second
+                break
+            end = oldest + timedelta(seconds=1)
         runs = runs[:max_runs]
+        # a filter shapes what this directory holds, so a later --from-dir pass must know about it
+        self._save(json.dumps({"branch": branch} if branch else {}), "filters.json")
         self._save(json.dumps(runs), "runs.json")
         return runs
 
@@ -387,8 +390,15 @@ class Source:
                     return json.load(handle)
         if self.from_dir:
             return None
+        jobs, page = [], 1
         try:
-            jobs = self._gh(f"repos/{self.repo}/actions/runs/{run_id}/attempts/{attempt}/jobs", {"per_page": 100}).get("jobs", [])
+            while True:
+                data = self._gh(f"repos/{self.repo}/actions/runs/{run_id}/attempts/{attempt}/jobs",
+                                {"per_page": 100, "page": page})
+                jobs.extend(data.get("jobs", []))
+                if len(jobs) >= data.get("total_count", 0) or not data.get("jobs"):
+                    break
+                page += 1
         except RuntimeError:
             return None
         self._save(json.dumps(jobs), "jobs", name)
@@ -441,6 +451,23 @@ class Source:
         contexts = sorted(c for c in contexts if c)
         self._save(json.dumps(contexts), "rules.json")
         return contexts
+
+    def caches(self):
+        """What the Actions cache holds (two requests): total size and count, and the biggest entries."""
+        if self.from_dir:
+            text = self._read("caches.json")
+            return json.loads(text) if text else None
+        try:
+            usage = self._gh(f"repos/{self.repo}/actions/cache/usage")
+            entries = self._gh(f"repos/{self.repo}/actions/caches",
+                               {"per_page": 100, "sort": "size_in_bytes", "direction": "desc"}).get("actions_caches", [])
+        except RuntimeError:
+            return None
+        data = {"count": usage.get("active_caches_count"), "bytes": usage.get("active_caches_size_in_bytes"),
+                "entries": [{k: e.get(k) for k in ("key", "ref", "size_in_bytes", "created_at", "last_accessed_at")}
+                            for e in entries]}
+        self._save(json.dumps(data), "caches.json")
+        return data
 
 
 # ---------------------------------------------------------------- pricing
@@ -1367,6 +1394,34 @@ def cache_evidence(source, runs, result, per_job, top_jobs):
             result["signals"].append(f"`{row['job']}` spends p50 {fmt(install[key])} on setup and its logs show no cache restore at all (caching.md).")
 
 
+def cache_store(source, result):
+    """Read what the Actions cache holds. An entry never restored after it was saved is a key that
+    changes every run (a miss in disguise), and a store near its limit evicts entries that still match."""
+    data = source.caches()
+    if data is None:
+        return
+    entries = data.get("entries") or []
+    newest = max((parse_ts(e["created_at"]) for e in entries), default=None)
+    # entries younger than a day haven't had a fair chance to be restored yet
+    mature = [e for e in entries if (seconds(parse_ts(e["created_at"]), newest) or 0) >= 86400]
+    never = [e for e in mature
+             if (seconds(parse_ts(e["created_at"]), parse_ts(e["last_accessed_at"])) or 0) < 60]
+    gb = (data.get("bytes") or 0) / 1e9
+    result["cache_store"] = {
+        "count": data.get("count") or 0, "gb": round(gb, 2),
+        "listed": len(entries), "mature": len(mature),
+        "never_read": len(never), "never_read_gb": round(sum(e["size_in_bytes"] for e in never) / 1e9, 2),
+        "biggest": [{"key": e["key"], "ref": e.get("ref") or "-", "gb": round(e["size_in_bytes"] / 1e9, 2)}
+                    for e in entries[:5]],
+    }
+    if gb >= 8:
+        result["signals"].append(f"The Actions cache holds {gb:.1f} GB of its 10 GB limit ({data['count']} entries): "
+                                 "past the limit GitHub evicts the oldest, so caches can miss with correct keys (caching.md).")
+    if len(mature) >= 20 and len(never) >= 0.5 * len(mature):
+        result["signals"].append(f"{len(never)} of the {len(mature)} biggest Actions cache entries were never restored "
+                                 "after being saved: keys that change every run, misses in disguise (caching.md).")
+
+
 # ---------------------------------------------------------------- report
 
 def savings_headline(sv):
@@ -1625,6 +1680,20 @@ def render(result, args):
         else:
             why = result.get("log_error") or "they expire, or the token lacks access"
             out.append(f"No logs could be read ({why}).\n")
+
+    store = result.get("cache_store")
+    if store:
+        out.append("## Cache storage on GitHub\n")
+        line = f"{store['count']} entries, {store['gb']:g} GB of the 10 GB limit."
+        if store["mature"] >= 5:
+            line += (f" Of the {store['listed']} biggest, {store['never_read']} were never restored after "
+                     f"being saved ({store['never_read_gb']:g} GB): keys that likely change every run.")
+        out.append(line + "\n")
+        if store["biggest"]:
+            out.append(table(["Biggest entries", "Branch", "GB"],
+                             [[e["key"], e["ref"], f"{e['gb']:g}"] for e in store["biggest"]]) + "\n")
+        out.append("A third-party runner may route actions/cache to its own backend, which this list does not "
+                   "see, so an empty list there says nothing about hits.\n")
     return "\n".join(out)
 
 
@@ -1742,6 +1811,10 @@ def main():
                                  "Raise --max-runs to cover more.")
     if args.logs > 0:
         cache_evidence(source, runs, result, args.logs, args.log_jobs)
+    cache_store(source, result)
+    if source.saved_filters.get("branch"):
+        result["signals"].insert(0, f"This saved data was fetched with --branch {source.saved_filters['branch']}: "
+                                 "every number here covers only that branch.")
 
     providers = PROVIDER_PRICES
     if args.providers:

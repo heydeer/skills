@@ -27,9 +27,11 @@ Don't infer from the YAML; a correct-looking cache step can miss every time.
   `Cache not found for input keys: …` is a miss. A post step saying
   `Cache hit occurred on the primary key …, not saving cache` means the exact
   key existed.
-- `gh cache list --limit 100` shows what is stored, how big, and when it was
-  last used. Many entries created minutes apart and never read again are a
-  key that changes on every run.
+- The report's "Cache storage on GitHub" section shows the store's size
+  against the 10 GB limit and its biggest entries, with how many were never
+  restored after being saved — entries created on every run and never read
+  again are a key that changes on every run. `gh cache list` pages through
+  the rest.
 - An install step that takes the same time on every run, with a cache step
   before it, is a miss whatever the log says.
 

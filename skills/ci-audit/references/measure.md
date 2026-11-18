@@ -6,11 +6,12 @@ dig further.
 ## What the script reads
 
 Through `gh api`, read-only: the repository's completed workflow runs in the
-window, the jobs and steps of each run, and the logs of a few recent jobs.
+window, the jobs and steps of each run, the logs of a few recent jobs, and
+what the Actions cache holds.
 
 GitHub has no way to read the jobs of many runs at once, so the script makes
-one API request per run, plus a few to list the runs and about thirty for
-logs: roughly 330 requests for the default 300 runs, and it prints the count
+one API request per run, plus a few to list the runs, two for the cache
+store and about thirty for logs: roughly 330 requests for the default 300 runs, and it prints the count
 when it finishes. A personal token allows 5,000 requests an hour on most
 plans and the token a workflow gets allows 1,000, shared with everything else
 that uses them, so:
@@ -209,6 +210,15 @@ fetches them over plain HTTP with the CLI's own token and strips the codes
 before matching; when none could be read, the report prints the first fetch
 error rather than guessing at the cause.
 
+**Cache storage on GitHub** is read directly (two requests): the store's
+total size against the 10 GB per-repository limit, and its hundred biggest
+entries. An entry that was never restored after it was saved is a key that
+changes every run — a miss in disguise — and a store near its limit evicts
+oldest-first, so caches can miss even with correct keys. Entries younger
+than a day are left out of that count; they haven't had a fair chance yet.
+Third-party runners often route `actions/cache` to their own backend, which
+this list does not see, so an empty list there says nothing about hits.
+
 **Signals** are thresholds over the numbers above. They are leads. Confirm
 each one in the workflow file before it goes into a finding.
 
@@ -244,9 +254,9 @@ others run everything, one median over both describes neither; use
   CPU-seconds against wall time. CPU-seconds near wall × cores means more
   cores will help; far below means it is waiting on I/O, a service, or sleeps,
   and a bigger machine won't.
-- **What a cache holds:** `gh cache list --limit 100` shows keys, sizes and
-  last access; a key that is created on every run and never read again is a
-  miss in disguise.
+- **More of the cache store:** the report's "Cache storage on GitHub"
+  section covers the hundred biggest entries; `gh cache list` pages through
+  the rest.
 - **Required checks:** `gh api repos/{owner}/{repo}/branches/{branch}/protection`
   or `gh api repos/{owner}/{repo}/rulesets`, which need admin read. Otherwise
   ask which checks are required before proposing to move or rename a job.

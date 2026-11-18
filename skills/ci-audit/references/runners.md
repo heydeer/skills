@@ -92,21 +92,16 @@ privileges.
 
 ## 4. GitHub-hosted prices
 
-Per minute, USD, each job rounded up to a whole minute. Read on 2026-11 from
-https://docs.github.com/en/billing/reference/actions-runner-pricing. Prices
-change, so open that page before quoting numbers to the user.
-
-| Runner | USD/min |
-|---|---|
-| Linux 1-core (`ubuntu-slim`) | 0.002 |
-| Linux 2-core arm64 | 0.005 |
-| Linux 2-core x64 (`ubuntu-latest`) | 0.006 |
-| Windows 2-core | 0.010 |
-| macOS (standard) | 0.062 |
-| macOS large / xlarge | 0.077 / 0.102 |
-| Larger Linux x64: 4 / 8 / 16 / 32 / 64 cores | 0.012 / 0.022 / 0.042 / 0.082 / 0.162 |
-| Larger Windows: 4 / 8 / 16 / 32 / 64 cores | 0.022 / 0.042 / 0.082 / 0.162 / 0.322 |
-| Larger Linux arm64: 4 / 8 / 16 / 32 / 64 cores | 0.008 / 0.014 / 0.026 / 0.050 / 0.098 |
+The script prices GitHub-hosted jobs from its built-in table (GitHub's list
+prices, each job rounded up to a whole minute, dated in the report); this
+file repeats none of the numbers, so there is one place for them to go
+stale. The shape of the price list: Linux x64 2-core is the baseline, arm64
+is about a sixth cheaper, each doubling of cores roughly doubles the price,
+Windows costs about double Linux, and macOS ten times or more — one macOS
+leg can outweigh the rest of the pipeline. `ubuntu-slim` (1 vCPU) is a third
+of the baseline. Prices change, so open
+https://docs.github.com/en/billing/reference/actions-runner-pricing before
+quoting a number to the user.
 
 Standard runners are free on public repositories. Private repositories get
 a monthly allowance of included minutes that depends on the plan; the
@@ -120,24 +115,13 @@ queues and built-in caching.
 
 The script's report includes "The same Linux minutes at other runners' list
 prices": this repository's billed minutes, by machine size, at each
-provider's public rate. The rates are in the script, read from the pricing
-pages on the date it prints. As read on 2026-11-18 (rows marked * on
-2026-11-17), Linux x64, USD per minute:
+provider's public rate, with each provider's free tier, rounding rule and
+other caveats in its note column. The rates live in one place — the
+`PROVIDER_PRICES` table inside the script, Windows and macOS included, with
+the date each was read — and `--providers FILE` (the same shape, as JSON)
+replaces them with fresher numbers; this file repeats none of them.
 
-| Provider | 2 vCPU | 4 vCPU | 8 vCPU | 16 vCPU | Worth knowing |
-|---|---|---|---|---|---|
-| GitHub-hosted | 0.006 | 0.012 | 0.022 | 0.042 | each job rounded up to a minute |
-| Depot * | 0.006 | not listed | not listed | not listed | plans from $20/mo with included minutes |
-| Blacksmith | 0.004 | 0.008 | 0.016 | 0.032 | half of GitHub's rate per their docs; 3,000 free minutes a month; rounding unpublished |
-| WarpBuild * | 0.004 | 0.008 | 0.016 | 0.032 | cache storage billed separately |
-| Namespace * | 0.002 | 0.008 | 0.016 | | prepaid rates, plans from $100/mo; 2 vCPU has 4 GB |
-| Ubicloud (premium) | 0.002 | 0.004 | 0.008 | 0.016 | standard tier closed to new customers since 2026-05; 1,250 free minutes a month |
-| Sengi (Basic) | 0.001 | 0.002 | 0.004 | not listed | rounds each job up to a minute; 3,000 free base minutes a month |
-| RunsOn, in your AWS account, spot * | 0.0009 | 0.0013 | 0.0024 | 0.0034 | plus a licence and AWS overhead; you operate it |
-
-The script's table also holds the Windows and macOS rates each provider
-lists (macOS between 0.04 and 0.16 a minute depending on the machine, against
-0.062 to 0.102 on GitHub-hosted). macOS machines are not alike: one
+macOS machines are not alike: one
 provider's smallest Mac may be twice the size of another's, so the script
 matches by class and marks approximations, and a trial matters even more
 than for Linux. The savings figure takes the lowest managed price for each
