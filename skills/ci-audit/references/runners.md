@@ -121,18 +121,19 @@ queues and built-in caching.
 The script's report includes "The same Linux minutes at other runners' list
 prices": this repository's billed minutes, by machine size, at each
 provider's public rate. The rates are in the script, read from the pricing
-pages on the date it prints. As read on 2026-11-17, Linux x64, USD per
-minute:
+pages on the date it prints. As read on 2026-11-18 (rows marked * on
+2026-11-17), Linux x64, USD per minute:
 
 | Provider | 2 vCPU | 4 vCPU | 8 vCPU | 16 vCPU | Worth knowing |
 |---|---|---|---|---|---|
 | GitHub-hosted | 0.006 | 0.012 | 0.022 | 0.042 | each job rounded up to a minute |
-| Depot | 0.006 | not listed | not listed | not listed | plans from $20/mo with included minutes |
-| Blacksmith | 0.004 | not listed | not listed | not listed | 3,000 free minutes a month |
-| WarpBuild | 0.004 | 0.008 | 0.016 | 0.032 | cache storage billed separately |
-| Namespace | 0.002 | 0.008 | 0.016 | | prepaid rates, plans from $100/mo; 2 vCPU has 4 GB |
-| Ubicloud (standard) | 0.0012 | 0.0025 | 0.005 | 0.010 | 1,250 free minutes a month |
-| RunsOn, in your AWS account, spot | 0.0009 | 0.0013 | 0.0024 | 0.0034 | plus a licence and AWS overhead; you operate it |
+| Depot * | 0.006 | not listed | not listed | not listed | plans from $20/mo with included minutes |
+| Blacksmith | 0.004 | 0.008 | 0.016 | 0.032 | half of GitHub's rate per their docs; 3,000 free minutes a month; rounding unpublished |
+| WarpBuild * | 0.004 | 0.008 | 0.016 | 0.032 | cache storage billed separately |
+| Namespace * | 0.002 | 0.008 | 0.016 | | prepaid rates, plans from $100/mo; 2 vCPU has 4 GB |
+| Ubicloud (premium) | 0.002 | 0.004 | 0.008 | 0.016 | standard tier closed to new customers since 2026-05; 1,250 free minutes a month |
+| Sengi (Basic) | 0.001 | 0.002 | 0.004 | not listed | rounds each job up to a minute; 3,000 free base minutes a month |
+| RunsOn, in your AWS account, spot * | 0.0009 | 0.0013 | 0.0024 | 0.0034 | plus a licence and AWS overhead; you operate it |
 
 The script's table also holds the Windows and macOS rates each provider
 lists (macOS between 0.04 and 0.16 a minute depending on the machine, against
@@ -151,11 +152,16 @@ appearing, so before a number goes into a report:
    table to a JSON file in the same shape as `PROVIDER_PRICES` in the script
    and rerun with `--providers FILE`.
 2. Say that it is list price for the same minutes. Not included: plan fees
-   and free tiers, cache and storage charges, whether the provider bills by
-   the second, and whether its machines are faster or slower than today's.
-   A provider that is half the price and a third slower saves a third, not
-   a half.
-3. Recommend a trial, not a migration: run one representative workflow on
+   and free tiers, cache and storage charges, and whether its machines are
+   faster or slower than today's. A provider that is half the price and a
+   third slower saves a third, not a half.
+3. Confirm for each provider whether it bills by the second or rounds each
+   job up to a whole minute; when its page doesn't say, write "rounding
+   unknown" next to it. Rounding is 20–30% of billed minutes on pipelines
+   with many short jobs, so this one fact moves the comparison more than
+   most rate differences — and the tiny-job and rounding savings rows only
+   exist under per-minute billing.
+4. Recommend a trial, not a migration: run one representative workflow on
    the candidate for a week (a copy of the workflow with a different
    `runs-on`), then run the audit script on those runs with `--price` and
    compare cost per run, PR feedback time, queue p90 and cache hit rate.

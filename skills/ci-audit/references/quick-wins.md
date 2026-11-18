@@ -15,6 +15,7 @@ gain per line changed. Check all of them before anything harder.
 7. Tiny jobs and per-minute rounding
 8. Checkout depth
 9. Schedules and default-branch runs
+10. Duplicate work
 
 ## 1. Cancel superseded PR runs
 
@@ -219,3 +220,29 @@ Look at the Workflows table for `schedule` and `push` rows:
 - Runs on the default branch after every merge are the safety net once PR
   checks get lighter (`do-less-per-pr.md`). Don't cancel them, and make sure
   a failure there reaches a person.
+
+## 10. Duplicate work
+
+Two shapes the report's "Duplicate work" table measures directly, inside each
+run, so the duplication is proven for that commit rather than guessed from
+the YAML:
+
+- **The same command in two jobs of one run.** A repository-wide check
+  (`format:check`, a lint over everything) living in two jobs runs twice on
+  every PR that triggers both of their path filters. Keep it in the job that
+  always runs, and exclude that case from the other job's condition — or
+  scope the second job's variant to its own files. When everything the
+  smaller job does is covered by a bigger job of the same run, the table
+  prices the whole smaller job.
+- **The same step twice in one job.** Usually a composite setup action
+  invoked again after an intermediate step re-arranged the tree (a second
+  full install after a deploy step). Reuse the first installation, or move
+  the intermediate step so the setup isn't repeated. A deploy or build
+  composite invoked twice with different inputs is not duplicate work, and
+  the report doesn't price those.
+
+The same step name is not always the same work: working directory, env and
+filters don't show in the name, so read both jobs in the YAML before
+promising the saving. And mind per-minute rounding: seconds removed from a
+job that still bills the same whole minutes save nothing until they tip a
+minute boundary.

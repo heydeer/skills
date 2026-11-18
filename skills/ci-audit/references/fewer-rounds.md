@@ -29,6 +29,11 @@ agent's sandbox.
   under about ten seconds or it will be skipped.
 - **Make the local commands the same ones CI runs**, through one script or
   task, so "passes locally" predicts "passes in CI".
+- **Give agents a stop rule.** The "most on one branch" line in the What
+  fails table shows what a missing one costs: an agent that keeps pushing a
+  failing branch can burn fifty or a hundred rounds on one PR. After two or
+  three consecutive failing rounds on the same branch, the agent should stop
+  pushing and hand the failure to a person.
 
 ## 2. Make each round answer everything at once
 

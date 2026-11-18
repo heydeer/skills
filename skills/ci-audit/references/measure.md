@@ -11,7 +11,10 @@ makes one request per run plus a handful for logs, so 300 runs take under a
 minute and 3,000 take five or six. On a busy repository the default 300 runs
 may cover only a day; raise `--max-runs` until the window spans at least a
 working week. Failed requests are retried, and a rerun with the same
-`--save-dir` fetches only what is missing. `--save-dir` keeps the raw responses; point `--from-dir` at that
+`--save-dir` fetches only what is missing. The API allows about 5,000
+requests an hour; a busy week can exhaust that mid-fetch, in which case the
+runs it could not read are dropped from every number *and from the window*,
+the report says so, and a rerun after the hourly reset backfills them. `--save-dir` keeps the raw responses; point `--from-dir` at that
 directory to re-analyze without calling the API again, or read the JSON files
 yourself for a question the report doesn't answer. `--json` writes every
 table plus one record per PR commit (branch, account, outcome, wait, billed
@@ -70,7 +73,18 @@ above that floor.
 
 **PR feedback time** is per commit: from the push to the last job of every
 `pull_request` workflow finishing. Commits whose runs were cancelled or
-re-run are left out so they don't distort it.
+re-run are left out so they don't distort it. Timing starts at the first
+run's start timestamp, which for `pull_request` events follows the push
+within seconds; the time before workflows start and human review are not in
+it.
+
+**Required checks only** is the merge gate: the same commits, timed to the
+last job whose check-run name is a required context. The script reads the
+contexts from branch rules itself (rulesets, then classic protection), and
+`--required-checks A,B` overrides them. "Finishes last" names the job that
+sets this number — the one to speed up next. Quote this figure as the merge
+wait and the headline as everything a push starts; a wide gap between the two
+is previews and bots, which cost money but block nothing.
 
 It is reported twice because passing and failing commits are different
 populations. A commit that fails often stops early, so when many commits fail
@@ -94,7 +108,20 @@ the class of each step; if a step is misclassified, redo the split by hand
 before quoting it.
 
 **Billed minutes** round every job up to a whole minute, as GitHub does. "Raw
-min" in the runner table is unrounded; the gap is what rounding costs.
+min" in the runner table is unrounded; the gap is what rounding costs. When
+third-party runners are priced and the gap matters, the summary adds an "if
+the provider bills by the second" line — the same rates on raw seconds.
+Providers don't all publish their rounding rule; reconcile with an invoice
+before leaning on either figure, and remember the rounding and tiny-job
+savings rows exist only under per-minute billing.
+
+**Duplicate work** measures three shapes inside each run: a job whose every
+command (steps GitHub named by their literal command) also ran in a bigger
+job of the same run, the same command in two jobs, and the same step name
+twice inside one job. A name can hide different inputs — a deploy composite
+invoked twice with different arguments is usually intentional — so every row
+is a lead to confirm in the YAML. Only whole duplicated jobs and repeated
+*setup* steps are priced in the savings.
 
 **Estimated cost** uses GitHub's list price for standard GitHub-hosted
 runners. It is not the bill:
@@ -138,7 +165,10 @@ the API goes; the test names are in the failed attempt's log
 (`gh run view <run-id> --attempt 1 --log-failed`). Earlier attempts are real
 billed minutes that no other table counts; the savings estimate includes
 them. It sees only failures someone chose to re-run: a flaky failure that
-was fixed by pushing again shows up as a CI round instead.
+was fixed by pushing again shows up as a CI round instead. When the earlier
+attempts can't be read (expired, or the API quota ran out), the report says
+flakiness is understated — say the same in the audit instead of calling the
+pipeline flake-free.
 
 **Matrix legs** lists each leg of the heaviest matrix jobs with its cost and
 how often it *failed alone*: runs where that leg failed and every sibling
@@ -160,7 +190,11 @@ jobs (`--logs` per job, for the `--log-jobs` heaviest jobs). It recognizes
 `actions/cache` and the `setup-*` actions, `Swatinem/rust-cache`, Turborepo
 and Nx task summaries, and Docker `CACHED` layers. No hits and no misses means
 no recognized cache step ran, not that the job is uncached; check the YAML.
-Logs expire (90 days by default) and need read access.
+Logs expire (90 days by default) and need read access. Raw log bodies carry
+terminal escape sequences, which `gh api` refuses to print, so the script
+fetches them over plain HTTP with the CLI's own token and strips the codes
+before matching; when none could be read, the report prints the first fetch
+error rather than guessing at the cause.
 
 **Signals** are thresholds over the numbers above. They are leads. Confirm
 each one in the workflow file before it goes into a finding.

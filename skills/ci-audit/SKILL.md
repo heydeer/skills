@@ -69,13 +69,24 @@ Useful options: `--days 30 --max-runs 600` for a quiet repo or a longer view,
 self-hosted), `--workflow ci` to focus on one workflow, and `--from-dir DIR` to
 analyze data someone saved earlier with `--save-dir`. `--help` lists the rest.
 
+**Make the window hold before reading further.** Two lines invalidate
+everything after them until fixed: "Hit --max-runs" (raise it and rerun until
+the window spans at least a working week) and "runs could not be read" (a
+busy week can exhaust the API's 5,000-requests-an-hour quota mid-fetch; the
+report then covers only the runs it kept, and a rerun after the reset with
+the same `--save-dir` fetches only what is missing). Never project a month
+from days the fetch skipped.
+
 The report opens with **two savings numbers**: dollars a month from the
 fixes it can price while keeping today's runners, and the total if the Linux
 jobs also moved to the cheapest managed runner at list price. Under them is
 the row-by-row breakdown, priced in order so no minute is counted twice, and
 what the remaining minutes would cost at each provider. It then gives PR feedback time for commits that pass (the wait for a green
-PR) and for all commits, how a passing commit's wait splits into time before
-its last job is created, queueing, setup and work, a table of jobs and of
+PR) and for all commits, the wait for the required checks alone (the merge
+gate, with the job that most often finishes last), how a passing commit's
+wait splits into time before
+its last job is created, queueing, setup and work, duplicate work measured
+inside each run, a table of jobs and of
 slowest steps, what each matrix leg costs and whether it ever failed alone,
 minutes and estimated dollars by runner, work that bought nothing, what fails
 and how late, jobs that failed and then passed on a re-run (flaky), CI rounds
@@ -85,19 +96,28 @@ file to read. `references/measure.md` explains every number and its limits.
 ## Step 2: Read the pipeline
 
 Read every file in `.github/workflows/` (and any composite actions and
-reusable workflows they call) and confirm each signal against the YAML before
-believing it. The script sees timings; only the files say why. A serial
-chain can be real dependencies, and runs that weren't cancelled can be
+reusable workflows they call) **at the remote default branch tip**, and
+confirm each signal against that YAML before believing it. The checkout may
+be sitting on an older branch, so `git fetch origin main` and read with
+`git show origin/main:.github/workflows/...`, and note the SHA you read:
+evidence links pin to it. The script sees timings; only the files say why. A
+serial chain can be real dependencies, and runs that weren't cancelled can be
 deploys that must not be.
 
-Work out which workflows are the checks a PR actually waits on. The headline
-wait covers everything a push starts, including preview deploys and comment
-bots; if those aren't gates, rerun with `--workflow <name>` for the ones that
-are and report both numbers. While reading,
+Work out which workflows are the checks a PR actually waits on. The report's
+"Required checks only" line is the merge gate (the script reads branch rules
+itself, or takes `--required-checks`); the headline wait covers everything a
+push starts, including preview deploys and comment bots — give both numbers
+and say which is which. While reading,
 note for each workflow: triggers, `concurrency`, `needs` edges, matrix,
-`runs-on`, `timeout-minutes`, cache steps and their keys, and which jobs branch
-protection requires (`gh api repos/{owner}/{repo}/branches/{branch}/protection`
-if you have access; otherwise ask).
+`runs-on`, `timeout-minutes`, cache steps and their keys, and which jobs
+branch protection requires (rulesets:
+`gh api repos/{owner}/{repo}/rules/branches/{branch}`; classic:
+`.../branches/{branch}/protection`; otherwise ask). Then check every row of
+the report's "Duplicate work" table against the YAML: the same command in two
+jobs of one run, or the same setup action twice in one job, is a finding the
+numbers already support — but the same step name can hide different inputs,
+so read both jobs before pricing it.
 
 Then work out which of these the numbers point to, and read only the
 references you need:
@@ -105,6 +125,7 @@ references you need:
 | What the numbers show | Lever | Read |
 |---|---|---|
 | Wait is mostly "waiting on earlier jobs"; cheap checks fail late; superseded runs keep running; push and PR both trigger; no timeouts; many sub-minute jobs | Pipeline shape | `references/quick-wins.md` |
+| The Duplicate work table has rows: a command runs in two jobs, or a setup step runs twice in one | Duplicate work | `references/quick-wins.md` |
 | Setup is a large share; cache misses in logs; installs take a minute or more | Caching | `references/caching.md` |
 | Work dominates: slow tests, lint, typecheck or build | Faster tests and tools | `references/tests-and-tools.md` |
 | Everything runs on every PR; OS matrix on PRs; still slow after the above | Do less per PR | `references/do-less-per-pr.md` |
@@ -128,20 +149,27 @@ Then the wait for a green PR, today and expected.
 Then two tables, one per number: | Fix | Tier | Saves/mo | What is counted |
 
 ## Where it stands
-PR feedback time p50 / p90, billed minutes and estimated cost per month,
-CI rounds per PR. Window and number of runs. What dominates the wait, and
-what dominates the cost; they often have different causes.
+PR feedback time p50 / p90 — the required checks alone (the merge gate) and
+everything a push starts, each named as such — billed minutes and estimated
+cost per month, CI rounds per PR. Window and number of runs. What dominates
+the wait, and what dominates the cost; they often have different causes.
 
 ## Findings
 A table, biggest payoff first:
 | # | Finding | Evidence | Fix | Expected effect | Risk | Tier |
-Evidence quotes the measurement (job, step, minutes, share). Expected effect is
+Evidence quotes the measurement (job, step, minutes, share) and links the
+workflow line at the SHA you read plus one sample run. Expected effect is
 a range in minutes and dollars with the arithmetic behind it. Tier is safe,
 check-first, or decision.
 
 ## Recommended order
 The first three to five changes and why that order. State the wait and the
 monthly cost after each step, so no step is a surprise.
+
+## Rejected
+Levers you checked and are not recommending, each with the evidence that
+killed it — optimizations the repository already has included, so nobody
+re-proposes them. Three lines here save the reader three questions.
 
 ## What this would change about coverage
 Anything that would stop running on PRs, and exactly where it runs instead.
@@ -172,10 +200,25 @@ not the answer:
   which rows need checking or a decision. Two numbers are easy to hold and
   to compare against a bill; a third subtotal or a single blended "up to"
   figure makes people ask what is in it.
-- For the runner row, open the pricing pages of the two or three cheapest
-  candidates now (the script's table is dated; `--providers` takes fresher
-  numbers) and say what list price leaves out: plan fees, free tiers, cache
-  charges, and machines that are faster or slower than today's.
+- A decision-tier row that changes what runs (previews on demand, a suite
+  off PRs) goes into the first number only with its assumption written in
+  the row ("at half of today's pushes") and its ceiling beside it, and the
+  headline then says how much hangs on decisions: "about $X a month, $Y of
+  it needs a decision below". Never fold an unstated adoption guess into a
+  headline; two auditors applying this rule must land on the same numbers.
+- The second number may not be printed until, in this session, you have
+  opened the pricing pages of the provider the repository uses today and the
+  two or three cheapest candidates, and checked the rates for the sizes this
+  repository uses. The script's table goes stale within months (tiers close
+  to new customers, new providers undercut it), so treat it as a starting
+  point, never a source: write down the date, rerun with `--providers` if
+  anything moved, and say what list price leaves out — plan fees, free
+  tiers, cache charges, and machines faster or slower than today's.
+- Say for each provider you keep whether it bills by the second or rounds
+  each job up to a whole minute; when its page doesn't say, write "rounding
+  unknown" in its row. When most minutes run on a provider whose rounding
+  you could not confirm, quote the report's per-second baseline beside the
+  rounded one and say which savings rows vanish under per-second billing.
 - Don't advertise a vendor. Compute the second number at the lowest managed
   list price, call it that, and name no provider in the two numbers, the
   rows, the findings or your message. Providers appear in one place only:

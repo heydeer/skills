@@ -63,8 +63,10 @@ GITHUB_HOSTED_PRICES = [
 ]
 
 # What the same Linux minutes would cost elsewhere: public list prices in USD per minute by vCPU count,
-# read from each provider's pricing page on 2026-11-17. They change; pass --providers FILE (same shape,
-# as JSON) to use fresher numbers. Sizes a page doesn't list are scaled from the nearest listed size.
+# read from each provider's pricing page on the date in "prices_read" below. They change (tiers close to
+# new customers, new providers undercut the table), so verify the cheapest candidates' pages before
+# quoting, and pass --providers FILE (same shape, as JSON) for fresher numbers. Sizes a page doesn't
+# list are scaled from the nearest listed size.
 PROVIDER_PRICES = {
     "GitHub-hosted": {
         "url": "https://docs.github.com/en/billing/reference/actions-runner-pricing",
@@ -77,9 +79,12 @@ PROVIDER_PRICES = {
         "url": "https://depot.dev/pricing", "x64": {2: 0.006},
         "note": "plans from $20/mo with 2,000 minutes included; only the 2 vCPU rate is listed"},
     "Blacksmith": {
-        "url": "https://www.blacksmith.sh/pricing", "x64": {2: 0.004}, "arm": {2: 0.0025},
+        "url": "https://www.blacksmith.sh/pricing",
+        "x64": {2: 0.004, 4: 0.008, 8: 0.016, 16: 0.032},
+        "arm": {2: 0.0025, 4: 0.004, 8: 0.007, 16: 0.013},
         "windows": {2: 0.008}, "macos": {"xlarge": 0.08},
-        "note": "3,000 free minutes a month; only base rates are listed; macOS is a 6 vCPU M4"},
+        "note": "3,000 free minutes a month; sizes beyond the base follow their documented "
+                "half-of-GitHub-per-minute rule; macOS is a 6 vCPU M4"},
     "WarpBuild": {
         "url": "https://www.warpbuild.com/pricing",
         "x64": {2: 0.004, 4: 0.008, 8: 0.016, 16: 0.032, 32: 0.064},
@@ -92,8 +97,11 @@ PROVIDER_PRICES = {
         "note": "prepaid rates on plans from $100/mo; the 2 vCPU shape has 4 GB of memory"},
     "Ubicloud": {
         "url": "https://www.ubicloud.com/use-cases/github-actions",
-        "x64": {2: 0.0012, 4: 0.0025, 8: 0.005, 16: 0.010},
-        "note": "standard runners; 1,250 free minutes a month"},
+        "x64": {2: 0.002, 4: 0.004, 8: 0.008, 16: 0.016},
+        "note": "premium runners (standard closed to new customers since 2026-05); 1,250 free minutes a month"},
+    "Sengi": {
+        "url": "https://sengi.run/pricing", "x64": {2: 0.001, 4: 0.002, 8: 0.004},
+        "note": "Basic tier; rounds each job up to a minute; 3,000 free base minutes a month; performance untested"},
     "RunsOn (your AWS account, spot)": {
         "url": "https://runs-on.com/pricing/", "self_run": True,
         "x64": {2: 0.0009, 4: 0.0013, 8: 0.0024, 16: 0.0034},
@@ -124,6 +132,8 @@ SETUP_PATTERNS = re.compile(
     re.I,
 )
 CHEAP_CHECK = re.compile(r"lint|format|fmt|prettier|biome|eslint|typecheck|type.check|tsc|ruff|mypy|clippy|vet", re.I)
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")   # job logs carry color codes that break line matching
 
 CACHE_HIT = re.compile(r"Cache restored from key|Restored from cache key|Cache hit for(?: restore-key)?:")
 CACHE_MISS = re.compile(r"[Cc]ache (?:is )?not found|No cache found")
@@ -188,6 +198,7 @@ def table(headers, rows):
 def group_name(job_name):
     """Collapse matrix legs and shards into one job: 'test (ubuntu, 20)' -> 'test'."""
     name = re.sub(r"\s*\([^()]*\)\s*$", "", job_name or "?")
+    name = re.sub(r"\s*\([^()]*$", "", name)   # a long leg list is truncated mid-parenthesis
     return re.sub(r"\s+\d+\s*/\s*\d+$", "", name) or job_name
 
 
@@ -216,6 +227,13 @@ class Source:
         self.repo, self.from_dir, self.save_dir = repo, from_dir, save_dir
         self.token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
         self.use_gh = bool(shutil.which("gh"))
+        if self.use_gh and not self.token and not from_dir:
+            # raw log bodies carry terminal escape sequences, which `gh api` refuses to print;
+            # with the CLI's own token they can be fetched over plain HTTP instead
+            proc = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True)
+            if proc.returncode == 0:
+                self.token = proc.stdout.strip() or None
+        self.log_errors = []
         self.opener = urllib.request.build_opener(_DropAuthOnRedirect)
         if save_dir:
             for sub in ("jobs", "logs"):
@@ -241,6 +259,9 @@ class Source:
             return None, proc.stderr.decode("utf-8", "replace").strip() or f"gh api {url} failed"
         if not self.token:
             sys.exit(NO_ACCESS)
+        return self._http(url)
+
+    def _http(self, url):
         base = os.environ.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
         request = urllib.request.Request(f"{base}/{url}", headers={
             "Authorization": f"Bearer {self.token}", "Accept": "application/vnd.github+json",
@@ -304,7 +325,10 @@ class Source:
 
     def jobs(self, run_id):
         if self.from_dir:
-            return json.loads(self._read("jobs", f"{run_id}.json") or "[]")
+            text = self._read("jobs", f"{run_id}.json")
+            if text is None:   # the saving pass could not read this run; keep it out, don't fake an empty one
+                raise RuntimeError("jobs/<run>.json missing from --from-dir (unread when saved)")
+            return json.loads(text)
         if self.save_dir:   # resume: a run saved by an earlier, interrupted pass is not fetched again
             saved = os.path.join(self.save_dir, "jobs", f"{run_id}.json")
             if os.path.exists(saved):
@@ -340,12 +364,46 @@ class Source:
     def log(self, job_id):
         if self.from_dir:
             return self._read("logs", f"{job_id}.txt")
-        try:
-            text = self._gh(f"repos/{self.repo}/actions/jobs/{job_id}/logs", raw=True)
-        except RuntimeError:
-            return None  # logs expire, and some tokens can't read them
+        path = f"repos/{self.repo}/actions/jobs/{job_id}/logs"
+        if self.token:
+            # not through `gh api`: it refuses log bodies ("the response contains terminal escape sequences")
+            text, error = self._http(path)
+        else:
+            proc = subprocess.run(["gh", "api", "--allow-escape-sequences", path], capture_output=True)
+            text = proc.stdout.decode("utf-8", "replace") if proc.returncode == 0 else None
+            error = None if text is not None else proc.stderr.decode("utf-8", "replace").strip()
+        if text is None:
+            self.log_errors.append((error or "?").splitlines()[-1][:160])  # logs expire, and some tokens can't read them
+            return None
         self._save(text, "logs", f"{job_id}.txt")
         return text
+
+    def branch_rules(self, branch):
+        """Required status-check contexts for a branch (rulesets plus classic protection), or None when unreadable."""
+        if self.from_dir:
+            text = self._read("rules.json")
+            return json.loads(text) if text else None
+        contexts, readable = set(), False
+        try:
+            rules = self._gh(f"repos/{self.repo}/rules/branches/{branch}")
+            readable = True
+            for rule in rules:
+                if rule.get("type") == "required_status_checks":
+                    for check in (rule.get("parameters") or {}).get("required_status_checks", []):
+                        contexts.add(check.get("context"))
+        except RuntimeError:
+            pass
+        try:
+            classic = self._gh(f"repos/{self.repo}/branches/{branch}/protection/required_status_checks")
+            readable = True
+            contexts.update(classic.get("contexts") or [])
+        except RuntimeError:
+            pass  # 404 when the branch has no classic protection, 403 without admin read
+        if not readable:
+            return None
+        contexts = sorted(c for c in contexts if c)
+        self._save(json.dumps(contexts), "rules.json")
+        return contexts
 
 
 # ---------------------------------------------------------------- pricing
@@ -507,8 +565,9 @@ def build(runs_raw, jobs_by_run):
     return runs
 
 
-def analyze(runs, info, args, window=None):
+def analyze(runs, info, args, window=None, required=None):
     public = info.get("private") is False
+    required_set = set(required or ())
     overrides = []
     for item in args.price or []:
         fragment, _, rate = item.rpartition("=")
@@ -588,6 +647,14 @@ def analyze(runs, info, args, window=None):
                        longest_job=max((j["queue"] or 0) + j["run_seconds"] for j in ran_jobs))
         bad = [j["done"] for r in items for j in r["jobs"] if j["conclusion"] in FAILED and j["done"]]
         row["first_failure"] = seconds(start, min(bad)) if bad else None
+        if required_set:
+            # the merge gate: only the jobs branch protection requires (contexts match check-run names)
+            req = [j for r in items for j in r["jobs"]
+                   if j["ran"] and (j["name"] in required_set or j["group"] in required_set)]
+            if req:
+                last_req = max(req, key=lambda j: j["done"])
+                row["required_wall"] = seconds(start, last_req["done"])
+                row["last_required"] = last_req["group"]
         commit_rows.append(row)
     commit_rows.sort(key=lambda c: c["pushed"])
     result["commits"] = commit_rows
@@ -613,6 +680,86 @@ def analyze(runs, info, args, window=None):
                 shares[k].append((c.get(k) or 0) / whole)
     result["pr_feedback"]["split_mean"] = {
         k: (sum(shares[k]) / len(shares[k]) * headline) if shares[k] and headline else None for k in parts}
+    if required_set:
+        req_pass = [c for c in passing if c.get("required_wall") is not None]
+        result["pr_feedback"]["required"] = {
+            "contexts": sorted(required_set), "commits": len(req_pass),
+            "p50": pct([c["required_wall"] for c in req_pass], .5),
+            "p90": pct([c["required_wall"] for c in req_pass], .9),
+            "last": Counter(c["last_required"] for c in req_pass).most_common(3),
+        }
+
+    # --- duplicate work. Only steps GitHub named by their literal command ("Run pnpm lint") are compared
+    # across jobs: a human-chosen name, a local composite ("Run ./…") or a marketplace action can hide
+    # different inputs behind one name. Inside one job, any repeated step name counts.
+    def command_step(step):
+        name = step["name"]
+        return (step["seconds"] >= 2 and not step["setup"] and name.startswith("Run ")
+                and not name.startswith("Run ./") and not re.match(r"Run [\w.-]+/[\w.-]+@", name))
+
+    dup_across = defaultdict(lambda: {"runs": 0, "seconds": 0.0, "groups": set()})
+    dup_jobs = defaultdict(lambda: {"jobs": 0, "minutes": 0})
+    repeats = defaultdict(lambda: {"jobs": 0, "seconds": 0.0})
+    for r in runs:
+        ran = [j for j in r["jobs"] if j["ran"]]
+        for j in ran:
+            counts = Counter(s["name"] for s in j["steps"] if s["seconds"] >= 5)
+            for name, count in counts.items():
+                if count > 1:
+                    same = [s for s in j["steps"] if s["name"] == name]
+                    extra = sum(sorted((s["seconds"] for s in same), reverse=True)[1:])
+                    entry = repeats[(r["workflow"], j["group"], name)]
+                    entry["jobs"] += 1
+                    entry["seconds"] += extra
+                    # only a repeated setup step is priced: a repeated deploy or build composite
+                    # usually carries different inputs each time (several targets in one job)
+                    if same[0]["setup"]:
+                        j["repeat_step_minutes"] = j.get("repeat_step_minutes", 0.0) + extra / 60
+        groups_of = defaultdict(set)
+        for j in ran:
+            for s in j["steps"]:
+                if command_step(s):
+                    groups_of[s["name"]].add(j["group"])
+        for name, in_groups in groups_of.items():
+            if len(in_groups) > 1:
+                entry = dup_across[(r["workflow"], name)]
+                entry["runs"] += 1
+                entry["groups"].update(in_groups)
+                times = sorted((s["seconds"] for j in ran for s in j["steps"]
+                                if s["name"] == name and command_step(s)), reverse=True)
+                entry["seconds"] += sum(times[1:])
+        # a job whose every command also ran in a bigger job of the same run is a fold candidate;
+        # "bigger" keeps one copy of mutually-identical jobs out of the count
+        work_of = {j["id"]: sum(s["seconds"] for s in j["steps"] if command_step(s)) for j in ran}
+        for j in ran:
+            work = [s for s in j["steps"] if command_step(s)]
+            bigger = {s["name"] for other in ran
+                      if other["group"] != j["group"]   # matrix siblings run the same commands on purpose
+                      and (work_of[other["id"]], other["group"]) > (work_of[j["id"]], j["group"])
+                      for s in other["steps"] if command_step(s)}
+            if work and all(s["name"] in bigger for s in work):
+                j["duplicate_work"] = True
+                entry = dup_jobs[(r["workflow"], j["group"])]
+                entry["jobs"] += 1
+                entry["minutes"] += j["billed_min"]
+    dup_rows = []
+    for (workflow, group), v in dup_jobs.items():
+        if v["jobs"] >= 3:
+            dup_rows.append({"kind": "whole job", "workflow": workflow, "what": group, "runs": v["jobs"],
+                             "minutes": round(v["minutes"]),
+                             "note": "every command it ran also ran in a bigger job of the same run"})
+    for (workflow, name), v in dup_across.items():
+        if v["runs"] >= 3 and v["seconds"] >= 60:
+            dup_rows.append({"kind": "across jobs", "workflow": workflow, "what": name, "runs": v["runs"],
+                             "minutes": round(v["seconds"] / 60),
+                             "note": "also in " + ", ".join(sorted(v["groups"])[:4])})
+    for (workflow, group, name), v in repeats.items():
+        if v["jobs"] >= 3 and v["seconds"] >= 60:
+            dup_rows.append({"kind": "repeated in one job", "workflow": workflow, "what": f"{group}: {name}",
+                             "runs": v["jobs"], "minutes": round(v["seconds"] / 60),
+                             "note": "the same step runs more than once in this job"})
+    dup_rows.sort(key=lambda d: -d["minutes"])
+    result["duplicates"] = dup_rows[:12]
 
     # --- per job
     groups = defaultdict(list)
@@ -701,7 +848,7 @@ def analyze(runs, info, args, window=None):
                 entry["jobs"] += 1
                 entry["billed"] += j["billed_min"]
                 entry["raw_seconds"] += j["run_seconds"]
-    runners, priced_cost, unpriced_min = [], 0.0, 0
+    runners, priced_cost, priced_raw_cost, unpriced_min = [], 0.0, 0.0, 0
     for label, entry in sorted(by_label.items(), key=lambda kv: -kv[1]["billed"]):
         rate, note = price_of(label, overrides, args.default_price, public)
         cost = None if rate is None else rate * entry["billed"]
@@ -709,6 +856,7 @@ def analyze(runs, info, args, window=None):
             unpriced_min += entry["billed"]
         else:
             priced_cost += cost
+            priced_raw_cost += rate * entry["raw_seconds"] / 60
         runners.append({"label": label, "provider": provider_of(label), "jobs": entry["jobs"],
                         "billed": entry["billed"], "raw_minutes": round(entry["raw_seconds"] / 60, 1),
                         "rate": rate, "cost": cost, "note": note})
@@ -716,6 +864,7 @@ def analyze(runs, info, args, window=None):
     result["runners"] = runners
     result["cost"] = {
         "window": priced_cost, "monthly": priced_cost * monthly,
+        "window_raw": priced_raw_cost, "monthly_raw": priced_raw_cost * monthly,
         "billed_minutes_monthly": total_billed * monthly, "unpriced_minutes": unpriced_min,
     }
 
@@ -840,6 +989,11 @@ def analyze(runs, info, args, window=None):
         found.append((pr_billed, f"The job {whose} waits on spends {fmt(crit['queue'])} waiting for a runner: look at runner capacity or provider (runners.md)."))
     if (crit.get("before") or 0) >= 60:
         found.append((pr_billed, f"The last job of {whose} is only created {fmt(crit['before'])} after the push: a `needs:` chain is serializing work. Parallel jobs cut the wait but also run on commits that would have failed early, so price both shapes (quick-wins.md)."))
+    req = feedback.get("required")
+    if req and req.get("p50") and headline and headline >= 1.5 * req["p50"]:
+        found.append((pr_billed, f"Everything a push starts takes p50 {fmt(headline)}, but the required checks alone take {fmt(req['p50'])}: quote the required figure as the merge gate, and weigh the rest (previews, bots) as cost, not wait (do-less-per-pr.md)."))
+    for d in result["duplicates"][:2]:
+        found.append((d["minutes"], f"Duplicate work ({d['kind']}): `{d['what']}` in {d['workflow']}, {d['minutes']} min in the window ({d['note']}). The same name is not always the same inputs, so confirm in the YAML before pricing it (quick-wins.md)."))
     if crit.get("setup") and crit["setup"] >= 30 and crit["setup"] >= 0.35 * (crit["setup"] + (crit.get("work") or 0)):
         found.append((pr_billed / 2, f"Setup is {share(crit['setup'], crit['setup'] + crit['work'])} of the job {whose} waits on ({fmt(crit['setup'])}): check caches and installs (caching.md)."))
     if superseded_runs:
@@ -989,6 +1143,17 @@ def estimate_savings(runs, result, info, args, providers, earlier=()):
     take("Remove jobs that only install and pass nothing on", "safe",
          "every run of jobs whose steps are all setup: " + ", ".join(sorted(job for _, job in idle)),
          lambda r, j: j["left"] if (r["workflow"], j["group"]) in idle else 0)
+    dup_names = sorted({d["what"] for d in result.get("duplicates", []) if d["kind"] == "whole job"})
+    if dup_names:
+        take("Skip jobs whose commands a bigger job of the same run also ran", "check first",
+             "the whole billed minutes of those executions (" + ", ".join(dup_names) + "); the same step "
+             "name is not always the same inputs, so read both jobs first",
+             lambda r, j: j["left"] if j.get("duplicate_work") else 0)
+    take("Run a repeated setup step once per job", "check first",
+         "the later executions of a setup step that runs twice in one job, in raw seconds at the job's rate "
+         "(see Duplicate work; repeated deploy/build composites are not counted — their inputs usually differ); "
+         "per-minute rounding can make the billed saving smaller than this",
+         lambda r, j: j.get("repeat_step_minutes", 0))
     take("Fix the jobs that fail and then pass on a re-run", "check first",
          "the failed executions that a re-run of the same commit turned green (see Flaky jobs)",
          lambda r, j: j["left"] if j.get("flaky") else 0, "tests-and-tools.md")
@@ -1108,7 +1273,8 @@ def estimate_savings(runs, result, info, args, providers, earlier=()):
         "total_monthly": current - after_fixes + runner_saving,
         "projected_monthly": after_fixes - runner_saving,
         "monthly_today": today, "providers": rows,
-        "prices_read": "2026-11-17" if providers is PROVIDER_PRICES else "from --providers",
+        "prices_read": "2026-11-18 (GitHub, Blacksmith, Ubicloud, Sengi; others 2026-11-17)"
+                       if providers is PROVIDER_PRICES else "from --providers",
         "quiet_days": result.get("quiet_days", 0),
         "unpriced_share": result["cost"]["unpriced_minutes"] / result["billed_minutes"] if result["billed_minutes"] else 0,
     }
@@ -1136,6 +1302,7 @@ def cache_evidence(source, runs, result, per_job, top_jobs):
     for (key, _), text in zip(todo, logs):
         if not text:
             continue
+        text = ANSI.sub("", text)   # color codes would break the line patterns below
         row = rows[key]
         row["logs"] += 1
         hits, misses = len(CACHE_HIT.findall(text)), len(CACHE_MISS.findall(text))
@@ -1148,6 +1315,8 @@ def cache_evidence(source, runs, result, per_job, top_jobs):
                 row["task_total"] += int(total)
         row["docker_cached"] += len(re.findall(r"^\S*\s*#\d+ CACHED", text, re.M))
     result["cache"] = [dict(workflow=k[0], job=k[1], **v) for k, v in rows.items()]
+    if not result["cache"] and source.log_errors:
+        result["log_error"] = source.log_errors[0]
     install = {(row["workflow"], row["job"]): row["setup_p50"] for row in result["jobs"]}
     for row in result["cache"]:
         key = (row["workflow"], row["job"])
@@ -1206,6 +1375,12 @@ def render(result, args):
         if ok["commits"]:
             lines.append(f"- **PR feedback time, commits that pass** (push to all checks done): p50 **{fmt(ok['p50'])}**, "
                          f"p90 **{fmt(ok['p90'])}** over {ok['commits']} commits. This is the wait for a green PR.")
+        req = feedback.get("required")
+        if req and req["commits"]:
+            last = ", ".join(f"{name} ({share(n, req['commits'])})" for name, n in req["last"])
+            lines.append(f"- **Required checks only** ({len(req['contexts'])} contexts from branch rules or "
+                         f"--required-checks): p50 **{fmt(req['p50'])}**, p90 {fmt(req['p90'])} over {req['commits']} "
+                         f"passing commits — the merge gate. Finishes last: {last}.")
         lines.append(f"- **All PR commits:** p50 {fmt(feedback['p50'])}, p90 {fmt(feedback['p90'])} over {feedback['commits']} commits."
                      + (f" {share(bad['commits'], feedback['commits'])} of them fail, and hear about it p50 "
                         f"{fmt(bad['first_failure_p50'])} after the push." if bad["commits"] else ""))
@@ -1230,6 +1405,12 @@ def render(result, args):
             " At the rates in the Runners table (GitHub list prices as read 2026-11, or your --price values), " \
             "before any included minutes."
         lines.append(f"- **Estimated cost:** {money(cost['window'])} in the window, about **{money(cost['monthly'])} a month**.{note}")
+        third_party = any(r["rate"] is not None and r["note"] != "GitHub list price" and not r["note"].startswith("free")
+                          for r in result["runners"])
+        if third_party and cost.get("monthly_raw") and cost["monthly_raw"] <= 0.9 * cost["monthly"]:
+            lines.append(f"- **If the provider bills by the second** rather than rounding each job up to a minute: "
+                         f"about **{money(cost['monthly_raw'])} a month**. Confirm the rounding rule on an invoice "
+                         "before using either number; the rounding and tiny-job rows vanish under per-second billing.")
     if cost["unpriced_minutes"]:
         lines.append(f"- {cost['unpriced_minutes']:,} billed minutes are on runners with no known price (see Runners).")
     if rounds["prs"]:
@@ -1339,6 +1520,16 @@ def render(result, args):
     ]) + "\n")
     out.append("Failed runs are not all waste: some caught a real bug. The rows overlap, so don't add them up.\n")
 
+    if result.get("duplicates"):
+        out.append("## Duplicate work\n")
+        out.append("The same command in more than one job of a run, or the same step twice in one job. "
+                   "Only steps named by their literal command are compared across jobs, but the same name can "
+                   "still hide different inputs: confirm each row in the YAML before pricing it. Minutes are "
+                   "billed minutes for whole jobs and raw step time otherwise.\n")
+        out.append(table(["Kind", "Workflow", "What", "Affected runs", "Window min", "Evidence"], [
+            [d["kind"], d["workflow"], d["what"], d["runs"], d["minutes"], d["note"]]
+            for d in result["duplicates"]]) + "\n")
+
     if result["failures"]:
         out.append("## What fails\n")
         out.append("Wait is from the push to the moment the failing job finished.\n")
@@ -1351,7 +1542,8 @@ def render(result, args):
         out.append("## Flaky jobs\n")
         if not flaky["attempts_read"]:
             out.append(f"{flaky['reruns']} runs were re-run, but their earlier attempts could not be read "
-                       "(saved data from before this was collected, or no access).\n")
+                       "(saved data from before this was collected, no access, or the API rate limit), so "
+                       "flakiness is understated here and their billed minutes are missing from the totals.\n")
         else:
             out.append(f"{flaky['reruns']} runs were re-run. Their earlier attempts used {flaky['earlier_billed_minutes']:,} billed "
                        "minutes that no other table here counts; the savings estimate does include them.\n")
@@ -1394,7 +1586,8 @@ def render(result, args):
             out.append("A sample of recent successful jobs, counted from log lines. No hits and no misses means "
                        "the job restores no cache this script recognizes.\n")
         else:
-            out.append("No logs could be read (they expire, or the token lacks access).\n")
+            why = result.get("log_error") or "they expire, or the token lacks access"
+            out.append(f"No logs could be read ({why}).\n")
     return "\n".join(out)
 
 
@@ -1413,6 +1606,8 @@ def main():
     parser.add_argument("--default-price", type=float, help="USD per minute for any runner with no known price")
     parser.add_argument("--providers", help="JSON file of provider prices to compare against, replacing the built-in table")
     parser.add_argument("--budget-minutes", type=float, help="PR feedback budget; exit 3 when p50 is over it")
+    parser.add_argument("--required-checks", metavar="A,B",
+                        help="required check contexts for the merge-gate wait (default: read from branch rules)")
     parser.add_argument("--logs", type=int, default=4, help="logs to read per heavy job for cache evidence (0 = none)")
     parser.add_argument("--log-jobs", type=int, default=8, help="how many of the heaviest jobs to read logs for")
     parser.add_argument("--json", help="also write the full result as JSON to this path")
@@ -1473,16 +1668,28 @@ def main():
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         jobs = list(pool.map(jobs_of, runs_raw))
+    rate_limited = any("rate limit" in reason.lower() for _, reason in unread)
     if unread:
         print(f"Could not read jobs for {len(unread)} runs (first: {unread[0][1]}). They are left out; "
               "rerun with the same --save-dir to fetch only what is missing.", file=sys.stderr)
+        if rate_limited:
+            print("The GitHub API rate limit ran out mid-fetch; it resets hourly.", file=sys.stderr)
         if len(unread) > len(runs_raw) / 2:
             sys.exit("More than half the runs could not be read. Check `gh auth status` and network access.")
     runs_raw, jobs = zip(*[(r, j) for r, j in zip(runs_raw, jobs) if j is not None])
+    if unread:   # project months from the runs that were read, not from days the fetch skipped
+        window = (min(map(started, runs_raw)), max(parse_ts(r.get("updated_at")) or started(r) for r in runs_raw))
+    required = [s.strip() for s in (args.required_checks or "").split(",") if s.strip()]
+    if not required:
+        required = source.branch_rules(info.get("default_branch") or "main")
     runs = build(runs_raw, {r["id"]: j for r, j in zip(runs_raw, jobs)})
-    result = analyze(runs, info, args, window)
+    result = analyze(runs, info, args, window, required)
     if unread:
-        result["signals"].insert(0, f"{len(unread)} runs could not be read and are missing from every number here.")
+        result["signals"].insert(0, f"{len(unread)} runs could not be read and are missing from every number here; "
+                                 "the window and the monthly projection cover only the runs that were read.")
+        if rate_limited:
+            result["signals"].insert(1, "The GitHub API rate limit ran out mid-fetch (it resets hourly): rerun later "
+                                     "with the same --save-dir to fetch only what is missing, then re-analyze.")
     if capped:
         result["signals"].append(f"Hit --max-runs {args.max_runs}: the window is shorter than --days {args.days}. "
                                  "Raise --max-runs to cover more.")
