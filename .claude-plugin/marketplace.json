@@ -1,0 +1,16 @@
+{
+  "name": "heydeer",
+  "description": "HeyDeer's plugin for Claude Code.",
+  "owner": {
+    "name": "HeyDeer",
+    "url": "https://heydeer.ai"
+  },
+  "plugins": [
+    {
+      "name": "heydeer",
+      "source": "./",
+      "description": "HeyDeer's agent skills: review your changes with HeyDeer before you push and work through its review on the pull request, and audit your CI for speed and cost.",
+      "category": "development"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+interface:
+  display_name: "HeyDeer"
+  short_description: "Review changes with HeyDeer and work through its findings"
+  default_prompt: "Review my changes with HeyDeer before I push."
+
+policy:
+  allow_implicit_invocation: true

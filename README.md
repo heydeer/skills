@@ -6,16 +6,32 @@ Code, Codex, Cursor and any other agent that loads skills.
 | Skill | For | What it does |
 |---|---|---|
 | [`ci-audit`](#ci-audit) | Everyone | Audits your repository's CI for speed and cost, tells you what you could save each month, and makes the fixes you pick |
+| [`heydeer`](#heydeer) | HeyDeer users | Reviews your changes with HeyDeer before you push, fixes the findings, and works through HeyDeer's review on the pull request |
 
 Install a skill by name:
 
 ```bash
 npx skills@latest add heydeer/skills --skill ci-audit
+npx skills@latest add heydeer/skills --skill heydeer
 ```
 
 Always pass `--skill`. Without it the CLI installs every skill in this
 repository, including ones written for HeyDeer users that you may have no
 use for. `npx skills@latest add heydeer/skills --list` shows what is here.
+
+The HeyDeer plugin installs every skill here. In Claude Code:
+
+```
+/plugin marketplace add heydeer/skills
+/plugin install heydeer@heydeer
+```
+
+In Codex:
+
+```bash
+codex plugin marketplace add heydeer/skills
+codex plugin add heydeer@heydeer
+```
 
 ## For everyone
 
@@ -190,8 +206,34 @@ skill is a stack-neutral audit that starts from your own numbers.
 
 ## For HeyDeer users
 
-Skills for teams that review their pull requests with HeyDeer will be added
-here. There are none yet.
+These need a GitHub repository with [HeyDeer](https://heydeer.ai) installed.
+
+### heydeer
+
+Lets your coding agent review its own changes with HeyDeer before it pushes,
+instead of waiting for the pull request.
+
+```bash
+npx skills@latest add heydeer/skills --skill heydeer
+```
+
+Then ask for a review as usual, such as "review my changes before I push".
+Your agent:
+
+- runs `heydeer review` on the branch and its uncommitted changes, with a
+  description of what the changes are meant to do
+- fixes the findings it agrees with, and brings the others to you
+- reviews again until nothing is left, then opens the pull request when you
+  ask, so HeyDeer doesn't review the same code twice
+- on the pull request, reads HeyDeer's review, fixes or declines findings, and
+  asks you before posting anything under your name
+
+#### Requirements
+
+The [HeyDeer CLI](https://heydeer.ai/docs/cli), signed in with `heydeer login`,
+and write access to the repository. The skill installs the CLI with your
+permission if it's missing. On the pull request it uses the
+[`gh` CLI](https://cli.github.com).
 
 ## About
 
@@ -201,3 +243,7 @@ registered in Singapore. Contact: hey@heydeer.ai
 ## License
 
 MIT. Copyright (c) 2026 ETOILEE PTE. LTD.
+
+The license doesn't cover the HeyDeer name and logo, including
+`assets/icon.svg`. See the [brand guidelines](https://heydeer.ai/brand) for
+how to refer to HeyDeer.
