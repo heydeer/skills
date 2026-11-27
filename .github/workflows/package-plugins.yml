@@ -1,0 +1,31 @@
+name: Package plugins
+
+# Builds the plugin files that are uploaded by hand: the Codex ZIP for OpenAI's
+# plugin directory, and the Claude ZIP for claude.ai's Upload plugin. Cursor and
+# Anthropic's directory read the repository itself, so they need no file.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm run package:codex
+      - run: npm run package:claude
+      - uses: actions/upload-artifact@v7
+        with:
+          name: heydeer-codex-plugin
+          path: dist/heydeer-codex-plugin.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: heydeer-claude-plugin
+          path: dist/heydeer-claude-plugin.zip
+          if-no-files-found: error

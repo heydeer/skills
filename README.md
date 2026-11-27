@@ -244,6 +244,6 @@ registered in Singapore. Contact: hey@heydeer.ai
 
 MIT. Copyright (c) 2026 ETOILEE PTE. LTD.
 
-The license doesn't cover the HeyDeer name and logo, including
-`assets/icon.svg`. See the [brand guidelines](https://heydeer.ai/brand) for
-how to refer to HeyDeer.
+The license doesn't cover the HeyDeer name and logo, including the icons in
+`assets/`. See the [brand guidelines](https://heydeer.ai/brand) for how to
+refer to HeyDeer.

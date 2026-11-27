@@ -19,7 +19,7 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "HeyDeer",
-    "shortDescription": "Review code with HeyDeer and audit your CI",
+    "shortDescription": "AI code review before you push",
     "longDescription": "HeyDeer's agent skills: review your changes with HeyDeer before you push and work through its review on the pull request, and audit your CI for speed and cost.",
     "developerName": "HeyDeer",
     "category": "Developer Tools",
