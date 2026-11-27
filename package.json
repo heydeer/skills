@@ -1,0 +1,8 @@
+{
+  "name": "heydeer-skills",
+  "private": true,
+  "scripts": {
+    "package:codex": "mkdir -p dist && git archive --format=zip -o dist/heydeer-codex-plugin.zip HEAD .codex-plugin skills assets",
+    "package:claude": "mkdir -p dist && git archive --format=zip -o dist/heydeer-claude-plugin.zip HEAD .claude-plugin/plugin.json skills assets/icon.png README.md LICENSE"
+  }
+}
